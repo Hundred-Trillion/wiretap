@@ -19,6 +19,11 @@ from uuid import UUID
 import structlog
 
 from wiretap.analysis.statistics import SessionStatistics
+from wiretap.analysis.classification import BinaryPacketFamily
+from wiretap.analysis.structural import FieldMapEntry
+from wiretap.analysis.similarity import PriceCandidate
+from wiretap.analysis.correlation import CorrelationResult
+from wiretap.analysis.protocol_graph import StateTransition, RequestResponseChain
 from wiretap.core.enums import Direction
 from wiretap.core.models import (
     Annotation,
@@ -65,6 +70,169 @@ class ReportGenerator:
         generated.append(self.generate_traffic_log(connections, frames, payloads))
 
         return generated
+
+    def generate_binary_discovery(
+        self,
+        session: CaptureSession,
+        families: list[BinaryPacketFamily],
+        field_maps: dict[str, list[FieldMapEntry]],
+        price_candidates: dict[str, list[PriceCandidate]],
+        correlations: list[CorrelationResult],
+        transitions: list[StateTransition],
+        chains: list[RequestResponseChain],
+        connections: list[Connection],
+        frames: list[Frame],
+        payloads: dict[UUID, Payload],
+    ) -> list[Path]:
+        """Generate binary protocol discovery reports and visualizations."""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        generated: list[Path] = []
+
+        # 1. Generate protocol_discovery.md
+        doc_path = self.generate_protocol_discovery_doc(
+            session, families, field_maps, price_candidates, correlations, transitions, chains
+        )
+        generated.append(doc_path)
+
+        # 2. Generate packet_explorer.html
+        from wiretap.visualization.packet_explorer import generate_packet_explorer
+        explorer_path = self._output_dir / "packet_explorer.html"
+        generate_packet_explorer(
+            explorer_path,
+            session.name,
+            families,
+            field_maps,
+            price_candidates,
+            correlations,
+            transitions,
+            chains,
+            connections,
+            frames,
+            payloads,
+        )
+        generated.append(explorer_path)
+
+        return generated
+
+    def generate_protocol_discovery_doc(
+        self,
+        session: CaptureSession,
+        families: list[BinaryPacketFamily],
+        field_maps: dict[str, list[FieldMapEntry]],
+        price_candidates: dict[str, list[PriceCandidate]],
+        correlations: list[CorrelationResult],
+        transitions: list[StateTransition],
+        chains: list[RequestResponseChain],
+    ) -> Path:
+        """Generate Markdown protocol discovery report."""
+        path = self._output_dir / "protocol_discovery.md"
+        lines: list[str] = []
+
+        lines.append(f"# Binary Protocol Discovery: {session.name}")
+        lines.append("")
+        lines.append(f"**Target:** {session.target_url}")
+        lines.append(f"**Captured:** {format_timestamp(session.started_at)}")
+        lines.append("")
+        lines.append("## Overview")
+        lines.append(f"The binary discovery engine successfully classified **{len(families)}** stable message families from captured binary frames.")
+        lines.append("")
+
+        # 1. Families Table
+        lines.append("## Discovered Packet Families")
+        lines.append("")
+        lines.append("| Family ID | Direction | Count | Avg Length | Avg Interval | Entropy | Purpose | Confidence |")
+        lines.append("|-----------|-----------|-------|------------|--------------|---------|---------|------------|")
+        for fam in families:
+            lines.append(
+                f"| `{fam.id}` | {fam.direction.name} | {fam.count} | {int(fam.avg_length)}B | {fam.avg_interval:.2f}s | {fam.entropy:.2f} | {fam.likely_purpose} | {fam.confidence:.0%} |"
+            )
+        lines.append("")
+
+        # 2. Candidate Price Fields
+        lines.append("## Price Candidate Scanner Results")
+        lines.append("Numerical fields behaving like price tick updates (dynamic fluctuations within expected price bounds):")
+        lines.append("")
+        has_prices = False
+        for fam_id, cands in price_candidates.items():
+            if not cands:
+                continue
+            has_prices = True
+            lines.append(f"### Family `{fam_id}` price Candidates")
+            lines.append("")
+            lines.append("| Offset | Size | Endianness | Type | Scale Factor | Confidence | Samples |")
+            lines.append("|--------|------|------------|------|--------------|------------|---------|")
+            for cand in cands:
+                samples_str = ", ".join(f"{v:.4f}" for v in cand.sample_values[:3])
+                lines.append(
+                    f"| `0x{cand.offset:02x}` ({cand.offset}) | {cand.size}B | {cand.endianness} | {cand.value_type} | {cand.scale_factor} | {cand.confidence:.0%} | {samples_str} |"
+                )
+            lines.append("")
+        if not has_prices:
+            lines.append("*No numerical fields met the price candidate heuristic bounds.*")
+            lines.append("")
+
+        # 3. Request-Response Chains
+        lines.append("## Inferred Request-Response Pairs")
+        lines.append("")
+        if chains:
+            lines.append("| Request Family | Response Family | Match Count | Total | Avg Latency | Confidence | Description |")
+            lines.append("|----------------|-----------------|-------------|-------|-------------|------------|-------------|")
+            for ch in chains:
+                lines.append(
+                    f"| `{ch.request_family}` | `{ch.response_family}` | {ch.match_count} | {ch.total_requests} | {ch.avg_latency * 1000:.1f}ms | {ch.confidence:.0%} | {ch.description} |"
+                )
+        else:
+            lines.append("*No request-response pairs were reliably inferred.*")
+        lines.append("")
+
+        # 4. State Transitions
+        lines.append("## Transition Frequencies")
+        lines.append("")
+        if transitions:
+            lines.append("| From Family | To Family | Transition Count | Avg Delay | Probability |")
+            lines.append("|-------------|-----------|------------------|-----------|-------------|")
+            for t in transitions[:15]:
+                lines.append(
+                    f"| `{t.from_family}` | `{t.to_family}` | {t.count} | {t.avg_interval:.2f}s | {t.probability:.1%} |"
+                )
+        else:
+            lines.append("*No transitions recorded.*")
+        lines.append("")
+
+        # 5. Timeline Correlations
+        lines.append("## Action Timeline Correlations")
+        lines.append("")
+        if correlations:
+            lines.append("| User Action / Annotation | Correlated Family | Co-Occurrences | Total Action Count | Probability | Lift | Confidence |")
+            lines.append("|--------------------------|-------------------|----------------|--------------------|-------------|------|------------|")
+            for c in correlations:
+                lines.append(
+                    f"| \"{c.action_text}\" | `{c.family_id}` | {c.co_occurrences} | {c.total_actions} | {c.probability} | {c.lift} | {c.confidence:.0%} |"
+                )
+        else:
+            lines.append("*No user annotations found or correlated.*")
+        lines.append("")
+
+        # 6. Detailed Byte Maps per Family
+        lines.append("## Structural Byte Maps")
+        lines.append("")
+        for fam in families:
+            f_map = field_maps.get(fam.id, [])
+            if not f_map:
+                continue
+            lines.append(f"### Family `{fam.id}` Structure")
+            lines.append("")
+            lines.append("| Offset | Size | Stability | Type | Description | Sample Values |")
+            lines.append("|--------|------|-----------|------|-------------|---------------|")
+            for entry in f_map:
+                samples_str = ", ".join(str(s) for s in entry.sample_values[:3])
+                lines.append(
+                    f"| `0x{entry.offset:02x}` ({entry.offset}) | {entry.size}B | **{entry.stability}** | {entry.type_name} | {entry.description} | `{samples_str}` |"
+                )
+            lines.append("")
+
+        path.write_text("\n".join(lines))
+        return path
 
     def generate_metadata(
         self, session: CaptureSession, connections: list[Connection]

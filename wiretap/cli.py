@@ -394,6 +394,50 @@ def report(
             session.started_at, session.ended_at,
         )
 
+        # Run binary protocol discovery (Phase 2)
+        from wiretap.analysis.classification import BinaryClusteringEngine
+        from wiretap.analysis.structural import StructuralAnalyzer
+        from wiretap.analysis.similarity import PriceCandidateDetector
+        from wiretap.analysis.correlation import BehaviorCorrelator
+        from wiretap.analysis.protocol_graph import ProtocolGraphBuilder
+
+        # Cluster binary packets
+        binary_frames = [f for f in frames if f.is_binary and f.payload_id]
+        binary_fps = []
+        clustering_engine = BinaryClusteringEngine()
+
+        for f in binary_frames:
+            p = payloads.get(f.payload_id)
+            if p:
+                fp = clustering_engine.fingerprint_packet(
+                    frame_id=f.id,
+                    connection_id=f.connection_id,
+                    direction=f.direction,
+                    timestamp=f.timestamp,
+                    payload_raw=p.raw_bytes,
+                    sha256=p.sha256
+                )
+                binary_fps.append(fp)
+
+        families = clustering_engine.cluster(binary_fps)
+
+        structural_analyzer = StructuralAnalyzer()
+        field_maps = {}
+        for fam in families:
+            field_maps[fam.id] = structural_analyzer.analyze_family(fam)
+
+        price_detector = PriceCandidateDetector()
+        price_candidates = {}
+        for fam in families:
+            price_candidates[fam.id] = price_detector.detect_prices(fam)
+
+        correlator = BehaviorCorrelator()
+        correlations = correlator.correlate(annotations, families, frames)
+
+        graph_builder = ProtocolGraphBuilder()
+        transitions = graph_builder.build_graph(families, frames)
+        chains = graph_builder.infer_chains(families, frames)
+
         # Generate reports
         out_dir = output_dir or config.reports_dir / session_id
         generator = ReportGenerator(out_dir)
@@ -401,6 +445,13 @@ def report(
             session, connections, frames, payloads,
             statistics, events, annotations,
         )
+
+        # Generate Phase 2 reports
+        binary_generated = generator.generate_binary_discovery(
+            session, families, field_maps, price_candidates, correlations, transitions, chains,
+            connections, frames, payloads
+        )
+        generated.extend(binary_generated)
 
         # Generate visualizations
         timeline_path = generate_timeline(
