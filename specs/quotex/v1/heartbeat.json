@@ -1,0 +1,7 @@
+{
+  "ping_interval_ms": 25000,
+  "ping_timeout_ms": 5000,
+  "ping_payload": "2",
+  "pong_payload": "3",
+  "sender": "server"
+}

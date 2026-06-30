@@ -986,5 +986,202 @@ def validate_price(
     asyncio.run(_run())
 
 
+@app.command()
+def trace(
+    protocol_name: str = typer.Argument(..., help="Protocol name (e.g. quotex)"),
+    token: str = typer.Option(..., "--token", "-t", help="Authentication token"),
+    asset: str = typer.Option("BTCUSD_otc", "--asset", "-a", help="Asset name to subscribe to"),
+    is_demo: bool = typer.Option(True, "--demo/--live", help="Demo or Live account mode"),
+) -> None:
+    """📡 Connect and trace live protocol updates in real-time."""
+
+    async def _run() -> None:
+        from wiretap.protocols.quotex.implementation import QuotexProtocolImplementation
+        from wiretap.core.adapter import EngineIOv3Adapter
+        from wiretap.core.session import TokenSessionProvider
+        from wiretap.core.client import ProtocolClient
+
+        spec_dir = Path.cwd() / "specs" / protocol_name / "v1"
+        if not spec_dir.exists():
+            console.print(f"[red]Specification directory not found: {spec_dir}[/]")
+            return
+
+        impl = QuotexProtocolImplementation(str(spec_dir))
+        adapter = EngineIOv3Adapter()
+        session_provider = TokenSessionProvider(token)
+
+        client = ProtocolClient(impl, adapter, session_provider)
+
+        console.print(Panel(
+            f"[bold green]📡 Starting Live Protocol Tracer[/]\n\n"
+            f"  Protocol: [bold]{protocol_name}[/]\n"
+            f"  Asset: {asset}\n"
+            f"  Mode: {'Demo' if is_demo else 'Live'}\n"
+            f"  State: Connecting...",
+            border_style="green"
+        ))
+
+        try:
+            async for packet in client.connect_and_stream(asset=asset, is_demo=is_demo):
+                if hasattr(packet, "price"):
+                    dir_arrow = "▲" if packet.direction == 1 else "▼"
+                    dir_color = "green" if packet.direction == 1 else "red"
+                    console.print(
+                        f"[bold dim]{packet.asset}[/] @ {packet.timestamp}: "
+                        f"[bold {dir_color}]{packet.price:.5f}[/] [{dir_color}]{dir_arrow}[/]"
+                    )
+                elif hasattr(packet, "direction") and not hasattr(packet, "price"):
+                    console.print(f"[dim][Heartbeat] {packet.direction}[/]")
+                elif hasattr(packet, "candles"):
+                    console.print(f"[cyan][History] {packet.asset} ({len(packet.candles)} candles)[/]")
+                else:
+                    console.print(f"[yellow][Unknown] type={packet.packet_type} size={len(packet.raw_payload)}[/]")
+        except KeyboardInterrupt:
+            await client.disconnect()
+            console.print("\n[yellow]Tracer stopped.[/]")
+
+    asyncio.run(_run())
+
+
+@app.command()
+def simulate(
+    session_id: str = typer.Argument(..., help="Session ID to simulate"),
+    protocol_name: str = typer.Option("quotex", "--protocol", help="Protocol name (e.g. quotex)"),
+    speed: float = typer.Option(1.0, "--speed", "-s", help="Playback speed multiplier"),
+    db_path: str = typer.Option("wiretap.db", "--db", help="Database file path"),
+) -> None:
+    """▶️  Simulate protocol playback from database offline."""
+
+    async def _run() -> None:
+        from wiretap.protocols.quotex.implementation import QuotexProtocolImplementation
+        from wiretap.replay.simulator import ReplaySimulator
+
+        spec_dir = Path.cwd() / "specs" / protocol_name / "v1"
+        if not spec_dir.exists():
+            console.print(f"[red]Specification directory not found: {spec_dir}[/]")
+            return
+
+        impl = QuotexProtocolImplementation(str(spec_dir))
+        sim = ReplaySimulator(db_path, session_id, impl, speed=speed)
+
+        count = sim.load()
+        if count == 0:
+            console.print(f"[red]No protocol packets found in session {session_id}[/]")
+            return
+
+        console.print(Panel(
+            f"[bold cyan]▶️  Protocol Replay Simulator[/]\n\n"
+            f"  Session ID: {session_id}\n"
+            f"  Total Packets: {count}\n"
+            f"  Playback Speed: {speed}x",
+            border_style="cyan"
+        ))
+
+        def callback(packet, frame):
+            seq = frame["sequence"]
+            if hasattr(packet, "price"):
+                dir_color = "green" if packet.direction == 1 else "red"
+                dir_arrow = "▲" if packet.direction == 1 else "▼"
+                console.print(
+                    f"[dim]#{seq}[/] [bold dim]{packet.asset}[/]: "
+                    f"[bold {dir_color}]{packet.price:.5f}[/] [{dir_color}]{dir_arrow}[/]"
+                )
+            elif hasattr(packet, "direction") and not hasattr(packet, "price"):
+                console.print(f"[dim]#{seq}[/] [dim][Heartbeat] {packet.direction}[/]")
+            elif hasattr(packet, "candles"):
+                console.print(f"[dim]#{seq}[/] [cyan][History] {packet.asset} ({len(packet.candles)} candles)[/]")
+            else:
+                console.print(f"[dim]#{seq}[/] [yellow][Unknown] type={packet.packet_type}[/]")
+
+        await sim.run(callback)
+        console.print("[green]Replay simulation finished.[/]")
+
+    asyncio.run(_run())
+
+
+@app.command()
+def doctor(
+    session_id: str = typer.Argument(..., help="Session ID to diagnose"),
+    protocol_name: str = typer.Option("quotex", "--protocol", help="Protocol name (e.g. quotex)"),
+    db_path: str = typer.Option("wiretap.db", "--db", help="Database file path"),
+) -> None:
+    """🩺 Analyze protocol drift and layout specification compliance."""
+
+    async def _run() -> None:
+        from wiretap.protocols.quotex.implementation import QuotexProtocolImplementation
+        from wiretap.drift.drift_detector import DriftDetector
+        import sqlite3
+
+        spec_dir = Path.cwd() / "specs" / protocol_name / "v1"
+        if not spec_dir.exists():
+            console.print(f"[red]Specification directory not found: {spec_dir}[/]")
+            return
+
+        impl = QuotexProtocolImplementation(str(spec_dir))
+        detector = DriftDetector(impl)
+
+        # Load frames directly
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT frames.sequence, frames.is_binary, payloads.raw_bytes
+            FROM frames
+            JOIN payloads ON frames.payload_id = payloads.id
+            JOIN connections ON frames.connection_id = connections.id
+            WHERE connections.session_id = ?
+            ORDER BY frames.sequence ASC;
+        """, (session_id,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            console.print(f"[red]No packets found in session {session_id}[/]")
+            return
+
+        console.print(f"Diagnosing protocol drift for session [bold]{session_id}[/] ({len(rows)} packets)...")
+
+        for seq, is_binary, raw_bytes in rows:
+            try:
+                if is_binary:
+                    packet_type = raw_bytes[0]
+                    payload = raw_bytes[1:]
+                else:
+                    text_str = raw_bytes.decode("utf-8", errors="ignore")
+                    packet_type = int(text_str[0])
+                    payload = text_str[1:]
+
+                packet = impl.parse_payload(packet_type, payload)
+                detector.inspect(packet)
+            except Exception:
+                pass
+
+        report = detector.get_report()
+
+        # Display Rich scorecard
+        console.print("\n")
+        console.print(Panel(
+            f"[bold green]🩺 Protocol Doctor Compliance Diagnosis[/]\n\n"
+            f"  • Total Packets Inspected: [bold]{report['total_processed']}[/]\n"
+            f"  • Compliant Packets: [bold]{report['total_processed'] - report['validation_failures_count'] - report['unknown_packets_count']}[/]\n"
+            f"  • Failed Layout Validation: [bold red]{report['validation_failures_count']}[/]\n"
+            f"  • Unknown/Unregistered Packets: [bold yellow]{report['unknown_packets_count']}[/]\n\n"
+            f"  [bold]Protocol Alignment Score: {report['drift_score_percentage']:.2f}%[/]",
+            border_style="green" if report['drift_score_percentage'] >= 90.0 else "yellow" if report['drift_score_percentage'] >= 70.0 else "red"
+        ))
+
+        if report["validation_failures"]:
+            console.print("\n[bold red]❌ Recent Layout Validation Failures:[/]")
+            for f in report["validation_failures"]:
+                console.print(f"  • [bold]{f['packet_type']}[/] failed checks: {', '.join(f['errors'])}")
+                console.print(f"    Data: {f['packet_data']}")
+
+        if report["unknown_packets_count"] > 0:
+            console.print(f"\n[bold yellow]⚠ Unknown/Unregistered Packets ({report['unknown_packets_count']}):[/]")
+            console.print("    These packets were logged. Standard protocol structures may have evolved.")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()
+

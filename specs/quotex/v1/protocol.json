@@ -1,0 +1,11 @@
+{
+  "name": "Quotex Live Protocol",
+  "version": "1.0.0",
+  "transport": "websocket",
+  "base_url": "wss://ws2.qxbroker.com/socket.io/",
+  "query_params": {
+    "EIO": "3",
+    "transport": "websocket"
+  },
+  "engine_io_version": 3
+}

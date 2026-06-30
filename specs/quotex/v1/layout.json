@@ -1,0 +1,63 @@
+{
+  "layouts": {
+    "PriceTick": {
+      "type": "array",
+      "min_length": 1,
+      "items": {
+        "type": "array",
+        "exact_length": 4,
+        "fields": [
+          {
+            "name": "asset",
+            "index": 0,
+            "type": "str",
+            "regex": "^[A-Z]{3,8}(?:_otc)?$"
+          },
+          {
+            "name": "timestamp",
+            "index": 1,
+            "type": "float",
+            "min_val": 1000000000.0
+          },
+          {
+            "name": "price",
+            "index": 2,
+            "type": "float",
+            "min_val": 0.00001
+          },
+          {
+            "name": "direction",
+            "index": 3,
+            "type": "int",
+            "enum": [0, 1]
+          }
+        ]
+      }
+    },
+    "HistoryPacket": {
+      "type": "dict",
+      "required_keys": ["asset", "period", "history"],
+      "fields": {
+        "asset": {
+          "type": "str"
+        },
+        "period": {
+          "type": "int",
+          "enum": [60]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "exact_length": 3,
+            "fields": [
+              { "name": "timestamp", "index": 0, "type": "float" },
+              { "name": "price", "index": 1, "type": "float" },
+              { "name": "direction", "index": 2, "type": "int" }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
