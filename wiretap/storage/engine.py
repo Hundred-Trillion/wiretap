@@ -67,7 +67,7 @@ async def init_database(engine: AsyncEngine) -> None:
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await logger.ainfo("database_initialized", tables=list(Base.metadata.tables.keys()))
+    logger.info("database_initialized", tables=list(Base.metadata.tables.keys()))
 
 
 async def close_database(engine: AsyncEngine) -> None:
@@ -77,4 +77,4 @@ async def close_database(engine: AsyncEngine) -> None:
         engine: The AsyncEngine to close.
     """
     await engine.dispose()
-    await logger.ainfo("database_closed")
+    logger.info("database_closed")

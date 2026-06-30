@@ -155,7 +155,7 @@ class EventBus:
         try:
             await handler(event)
         except Exception:
-            await self._log.aerror(
+            self._log.error(
                 "event_handler_failed",
                 event_type=type(event).__name__,
                 handler=getattr(handler, "__qualname__", str(handler)),

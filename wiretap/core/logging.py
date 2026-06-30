@@ -48,7 +48,7 @@ def configure_logging(level: str = "INFO", fmt: str = "console") -> None:
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.AsyncBoundLogger,
+        wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
 

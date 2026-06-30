@@ -95,7 +95,7 @@ class NetworkCapture:
             self._on_sse_message,
         )
 
-        await self._log.ainfo("network_capture_enabled")
+        self._log.info("network_capture_enabled")
 
     async def disable(self) -> None:
         """Disable CDP Network domain."""
@@ -103,7 +103,7 @@ class NetworkCapture:
             await self._cdp.send("Network.disable")
         except Exception:
             pass  # Browser may already be closed
-        await self._log.ainfo("network_capture_disabled")
+        self._log.info("network_capture_disabled")
 
     @property
     def connections(self) -> list[Connection]:
@@ -283,7 +283,7 @@ class NetworkCapture:
 
         except Exception:
             # Response body may not be available (e.g., redirects)
-            await self._log.adebug(
+            self._log.debug(
                 "response_body_unavailable", request_id=request_id
             )
 

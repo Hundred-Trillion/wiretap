@@ -73,7 +73,7 @@ class BrowserManager:
                     "height": self._config.viewport_height,
                 },
             )
-            await self._log.ainfo(
+            self._log.info(
                 "browser_started",
                 mode="persistent",
                 profile=str(self._config.profile_dir),
@@ -91,7 +91,7 @@ class BrowserManager:
                     "height": self._config.viewport_height,
                 },
             )
-            await self._log.ainfo(
+            self._log.info(
                 "browser_started",
                 mode="ephemeral",
                 headless=self._config.headless,
@@ -109,7 +109,7 @@ class BrowserManager:
         if self._context is None:
             raise RuntimeError("Browser not started. Call start() first.")
         page = await self._context.new_page()
-        await self._log.ainfo("page_created")
+        self._log.info("page_created")
         return page
 
     async def create_cdp_session(self, page: Page) -> CDPSession:
@@ -130,7 +130,7 @@ class BrowserManager:
         if self._context is None:
             raise RuntimeError("Browser not started. Call start() first.")
         cdp = await self._context.new_cdp_session(page)
-        await self._log.ainfo("cdp_session_created")
+        self._log.info("cdp_session_created")
         return cdp
 
     async def stop(self) -> None:
@@ -144,7 +144,7 @@ class BrowserManager:
         if self._playwright:
             await self._playwright.stop()
             self._playwright = None
-        await self._log.ainfo("browser_stopped")
+        self._log.info("browser_stopped")
 
     @property
     def context(self) -> BrowserContext | None:

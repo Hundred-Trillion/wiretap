@@ -132,7 +132,7 @@ class CaptureOrchestrator:
             )
         )
 
-        await self._log.ainfo(
+        self._log.info(
             "capture_started",
             session_id=str(self._capture_session.id),
             url=url,
@@ -142,7 +142,7 @@ class CaptureOrchestrator:
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
-                await self._log.awarning("navigation_timeout", url=url)
+                self._log.warning("navigation_timeout", url=url)
 
         return self._capture_session.id
 
@@ -181,7 +181,7 @@ class CaptureOrchestrator:
             )
         )
 
-        await self._log.ainfo("annotation_added", text=text)
+        self._log.info("annotation_added", text=text)
         return annotation
 
     async def stop(self) -> CaptureSessionModel | None:
@@ -225,7 +225,7 @@ class CaptureOrchestrator:
             self._browser_manager = None
 
         session = self._capture_session
-        await self._log.ainfo(
+        self._log.info(
             "capture_stopped",
             session_id=str(session.id),
             connections=len(self._network_capture.connections) if self._network_capture else 0,
@@ -257,7 +257,7 @@ class CaptureOrchestrator:
 
             await db.commit()
 
-        await self._log.ainfo(
+        self._log.info(
             "data_persisted",
             connections=len(self._network_capture.connections),
             frames=len(self._network_capture.frames),
