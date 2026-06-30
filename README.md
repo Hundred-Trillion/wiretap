@@ -15,6 +15,9 @@ Unlike HTML scrapers or DOM-based testing tools, Wiretap operates entirely at th
 - **Interactive Visualizations**: Generates self-contained, offline HTML dashboards containing event timelines, domain connection graphs, and payload inspectors.
 - **Session Replay**: Step through captured traffic frame-by-frame, apply filters, and switch decoders on the fly from the CLI.
 - **Plugin-Driven Architecture**: Easily extend analysis and decoding via standard Python entry points.
+- **Spec-Driven Protocol Reproduction**: Connect directly to backend WebSockets using declarative JSON specifications (under `specs/`) without starting a browser.
+- **Drift & Layout Doctor**: Monitor protocol mutations and field shifts dynamically at runtime.
+- **Protocol Replay Simulation**: Simulate real-time captured streams offline with pause/step controls and speed multipliers.
 
 ---
 
@@ -42,24 +45,29 @@ wiretap capture https://example.com --name my-capture-session
 ```
 *Type annotations (e.g. `Clicked Login`, `Loaded Dashboard`) into the terminal while capturing to correlate user actions with network events.*
 
-### 2. View Statistics
-Summarize connection counts, protocols, bandwidth, and payload size metrics:
+### 2. Live Spec-Driven Tracer (No Browser)
+Connect directly to the backend WebSocket server using a saved session token and stream live price ticks/payloads:
 ```bash
-wiretap stats <session-id>
+wiretap trace quotex --token <session-token> --asset BTCUSD_otc
 ```
 
-### 3. Generate Reports & Visualizations
+### 3. Replay & Playback Simulator
+Simulate protocol playback from your captured SQLite session logs offline:
+```bash
+wiretap simulate <session-id> --speed 10
+```
+
+### 4. Protocol Drift Doctor
+Diagnose layout changes or unknown/unregistered packets in a session:
+```bash
+wiretap doctor <session-id>
+```
+
+### 5. Generate Reports & Visualizations
 Produce Markdown documentation and interactive HTML files (Timeline, Connection Graph, Payload Explorer):
 ```bash
 wiretap report <session-id> --output ./my-reports
 ```
-
-### 4. Interactive Frame Replay
-Step through the captured traffic frame-by-frame:
-```bash
-wiretap replay <session-id> --protocol WEBSOCKET
-```
-*Use keys `n` (next), `p` (prev), `g <index>` (goto frame), and `q` (quit).*
 
 ---
 
@@ -78,9 +86,13 @@ wiretap --help
 - `compare <session-a> <session-b>`: Diff two capture sessions.
 - `stats <session>`: Print session traffic statistics.
 - `plugins`: List installed decoders and plugins.
+- `trace <protocol>`: Connect and trace live protocol updates in real-time.
+- `simulate <session>`: Simulate protocol playback from database offline.
+- `doctor <session>`: Analyze protocol drift and layout specification compliance.
 
 ---
 
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
