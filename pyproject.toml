@@ -1,0 +1,94 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wiretap"
+version = "0.1.0"
+description = "Professional browser protocol analysis framework"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Wiretap Contributors" },
+]
+keywords = [
+    "protocol-analysis",
+    "browser",
+    "network",
+    "websocket",
+    "cdp",
+    "reverse-engineering",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: System :: Networking :: Monitoring",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "playwright>=1.40.0",
+    "typer[all]>=0.9.0",
+    "rich>=13.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "aiosqlite>=0.19.0",
+    "structlog>=23.0.0",
+    "orjson>=3.9.0",
+    "msgpack>=1.0.0",
+    "cbor2>=5.5.0",
+    "brotli>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
+    "ruff>=0.2.0",
+]
+
+[project.scripts]
+wiretap = "wiretap.cli:app"
+
+[project.entry-points."wiretap.decoders"]
+utf8 = "wiretap.decoders.builtin.utf8:UTF8Decoder"
+utf16 = "wiretap.decoders.builtin.utf16:UTF16Decoder"
+json = "wiretap.decoders.builtin.json_decoder:JSONDecoder"
+xml = "wiretap.decoders.builtin.xml_decoder:XMLDecoder"
+gzip = "wiretap.decoders.builtin.gzip_decoder:GzipDecoder"
+zlib = "wiretap.decoders.builtin.zlib_decoder:ZlibDecoder"
+brotli = "wiretap.decoders.builtin.brotli_decoder:BrotliDecoder"
+msgpack = "wiretap.decoders.builtin.msgpack_decoder:MsgpackDecoder"
+cbor = "wiretap.decoders.builtin.cbor_decoder:CBORDecoder"
+protobuf = "wiretap.decoders.builtin.protobuf_heuristic:ProtobufHeuristicDecoder"
+flatbuffer = "wiretap.decoders.builtin.flatbuffer_heuristic:FlatBufferHeuristicDecoder"
+
+[project.entry-points."wiretap.plugins"]
+generic = "wiretap.plugins.generic:GenericPlugin"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "SIM", "TCH"]
+ignore = ["ANN101", "ANN102"]
