@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from wiretap.analysis.classification import BinaryPacketFamily
@@ -26,7 +26,10 @@ class PriceCandidate:
     scale_factor: float  # e.g., 100000.0 for scaled ints, 1.0 for floats
     confidence: float  # 0.0 to 1.0 based on criteria
     description: str
+    score_breakdown: dict[str, int] = field(default_factory=dict)
     sample_values: list[float] = field(default_factory=list)
+    json_path: Optional[str] = None
+
 
 
 class SimilarityEngine:
@@ -132,7 +135,8 @@ class PriceCandidateDetector:
                     continue
 
                 if self._validate_price_sequence(vals):
-                    confidence = self._score_price_sequence(vals)
+                    breakdown = self._score_price_sequence_breakdown(vals)
+                    confidence = float(sum(breakdown.values())) / 100.0
                     candidates.append(
                         PriceCandidate(
                             offset=offset,
@@ -142,6 +146,7 @@ class PriceCandidateDetector:
                             scale_factor=1.0,
                             sample_values=list(vals[:5]),
                             confidence=confidence,
+                            score_breakdown=breakdown,
                             description=f"Double-precision float price ticker (confidence {confidence:.2f})",
                         )
                     )
@@ -158,7 +163,8 @@ class PriceCandidateDetector:
                     continue
 
                 if self._validate_price_sequence(vals):
-                    confidence = self._score_price_sequence(vals)
+                    breakdown = self._score_price_sequence_breakdown(vals)
+                    confidence = float(sum(breakdown.values())) / 100.0
                     candidates.append(
                         PriceCandidate(
                             offset=offset,
@@ -168,6 +174,7 @@ class PriceCandidateDetector:
                             scale_factor=1.0,
                             sample_values=list(vals[:5]),
                             confidence=confidence,
+                            score_breakdown=breakdown,
                             description=f"Single-precision float price ticker (confidence {confidence:.2f})",
                         )
                     )
@@ -189,7 +196,9 @@ class PriceCandidateDetector:
                 for scale in scales:
                     vals = [float(v) / scale for v in raw_vals]
                     if self._validate_price_sequence(vals):
-                        confidence = self._score_price_sequence(vals) * 0.9  # slightly lower confidence for scaled ints
+                        breakdown = self._score_price_sequence_breakdown(vals)
+                        # Slightly lower confidence for scaled integers compared to native floats
+                        confidence = (float(sum(breakdown.values())) / 100.0) * 0.9
                         type_name = "int32" if "i" in fmt else "uint32"
                         candidates.append(
                             PriceCandidate(
@@ -200,14 +209,104 @@ class PriceCandidateDetector:
                                 scale_factor=scale,
                                 sample_values=list(vals[:5]),
                                 confidence=confidence,
+                                score_breakdown=breakdown,
                                 description=f"Scaled {type_name} price ticker (scale 1/{int(scale)}, confidence {confidence:.2f})",
                             )
                         )
                         break  # Match only one scale per offset
 
+        # 4. Scan JSON-encoded candidates (if payloads look like JSON or start with EIO control characters)
+        json_paths_checked = False
+        for fp in fingerprints[:3]:
+            data = fp.payload_raw
+            start_idx = -1
+            for i, b in enumerate(data[:10]):  # only check first few bytes for JSON marker
+                if b in (ord('{'), ord('[')):
+                    start_idx = i
+                    break
+            if start_idx != -1:
+                try:
+                    import json
+                    obj = json.loads(data[start_idx:].decode('utf-8', errors='ignore'))
+                    if not json_paths_checked:
+                        json_paths_checked = True
+                        paths = list(self._traverse_json(obj))
+                        for path, _ in paths:
+                            vals = []
+                            for fp_inner in fingerprints:
+                                data_inner = fp_inner.payload_raw
+                                start_idx_inner = -1
+                                for i, b in enumerate(data_inner[:10]):
+                                    if b in (ord('{'), ord('[')):
+                                        start_idx_inner = i
+                                        break
+                                if start_idx_inner != -1:
+                                    try:
+                                        obj_inner = json.loads(data_inner[start_idx_inner:].decode('utf-8', errors='ignore'))
+                                        val = self._resolve_json_path(obj_inner, path)
+                                        if val is not None:
+                                            vals.append(val)
+                                    except Exception:
+                                        pass
+                            
+                            # Validate sequence of values extracted from the JSON path
+                            if len(vals) >= max(3, int(len(fingerprints) * 0.5)) and self._validate_price_sequence(vals):
+                                breakdown = self._score_price_sequence_breakdown(vals)
+                                confidence = float(sum(breakdown.values())) / 100.0
+                                candidates.append(
+                                    PriceCandidate(
+                                        offset=0,
+                                        size=0,
+                                        endianness="JSON",
+                                        value_type="json_numeric",
+                                        scale_factor=1.0,
+                                        sample_values=list(vals[:5]),
+                                        confidence=confidence,
+                                        score_breakdown=breakdown,
+                                        description=f"JSON path '{path}' price ticker (confidence {confidence:.2f})",
+                                        json_path=path
+                                    )
+                                )
+                except Exception:
+                    pass
+
         # Sort candidates by confidence descending
         candidates.sort(key=lambda c: c.confidence, reverse=True)
         return candidates
+
+    def _traverse_json(self, val: Any, path: str = "") -> list[tuple[str, float]]:
+        paths = []
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            paths.append((path, float(val)))
+        elif isinstance(val, dict):
+            for k, v in val.items():
+                new_path = f"{path}.{k}" if path else k
+                paths.extend(self._traverse_json(v, new_path))
+        elif isinstance(val, list):
+            for idx, v in enumerate(val):
+                new_path = f"{path}[{idx}]"
+                paths.extend(self._traverse_json(v, new_path))
+        return paths
+
+    def _resolve_json_path(self, obj: Any, path: str) -> float | None:
+        import re
+        tokens = re.findall(r'([^\[\.]+)|\[(\d+)\]', path)
+        curr = obj
+        for key, idx in tokens:
+            if idx:
+                try:
+                    curr = curr[int(idx)]
+                except (IndexError, TypeError, KeyError):
+                    return None
+            else:
+                try:
+                    curr = curr[key]
+                except (TypeError, KeyError):
+                    return None
+        if isinstance(curr, (int, float)) and not isinstance(curr, bool):
+            return float(curr)
+        return None
+
 
     def _validate_price_sequence(self, vals: list[float]) -> bool:
         """Verify if a sequence of values behaves like asset price updates."""
@@ -240,21 +339,41 @@ class PriceCandidateDetector:
 
         return True
 
-    def _score_price_sequence(self, vals: list[float]) -> float:
-        """Assign confidence score to a price candidate sequence based on properties."""
-        # 1. Dynamic check: how many unique values exist (more is better/dynamic)
-        unique_ratio = len(set(vals)) / len(vals)
+    def _score_price_sequence_breakdown(self, vals: list[float]) -> dict[str, int]:
+        """Compute point breakdown for a price candidate sequence (max 100 points)."""
+        breakdown = {
+            "dynamic_variance": 0,
+            "bounds_monotonicity": 0,
+            "representation_scale": 0,
+            "precision_alignment": 0,
+        }
 
-        # 2. Increment check: check if the sequence fluctuates like an asset ticker
-        # (mostly consecutive changes, but stays in a bounded variance)
+        # 1. Dynamic variance (up to 30 points)
+        unique_ratio = len(set(vals)) / len(vals)
         tick_variances = [abs(vals[i] - vals[i - 1]) / vals[i - 1] for i in range(1, len(vals))]
         non_zero_ticks = sum(1 for v in tick_variances if v > 0.0)
         tick_ratio = non_zero_ticks / len(tick_variances) if tick_variances else 0.0
+        
+        dynamic_score = int(unique_ratio * 15 + tick_ratio * 15)
+        breakdown["dynamic_variance"] = min(30, max(5, dynamic_score))
 
-        # 3. Precision score: typical price feeds have multiple decimal digits.
-        # Check if values are mostly integers. If all are perfect integers, it's less likely to be a price (unless crypto / high value).
+        # 2. Bounds and monotonicity (up to 30 points)
+        avg_variance = sum(tick_variances) / len(tick_variances) if tick_variances else 0.0
+        if avg_variance < 0.01:
+            breakdown["bounds_monotonicity"] = 30
+        elif avg_variance < 0.05:
+            breakdown["bounds_monotonicity"] = 20
+        else:
+            breakdown["bounds_monotonicity"] = 10
+
+        # 3. Representation & Scale (up to 20 points)
         are_integers = all(v.is_integer() for v in vals)
-        precision_bonus = 0.6 if are_integers else 1.0
+        if not are_integers:
+            breakdown["representation_scale"] = 20
+        else:
+            breakdown["representation_scale"] = 15
 
-        score = (unique_ratio * 0.4 + tick_ratio * 0.6) * precision_bonus
-        return min(0.99, max(0.1, score))
+        # 4. Precision alignment (up to 20 points)
+        breakdown["precision_alignment"] = 20 if not are_integers else 10
+
+        return breakdown

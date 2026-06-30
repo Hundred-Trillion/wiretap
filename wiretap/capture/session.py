@@ -66,6 +66,8 @@ class CaptureOrchestrator:
         self._network_capture: NetworkCapture | None = None
         self._capture_session: CaptureSessionModel | None = None
         self._running = False
+        self._page = None
+        self._dom_poller_task: asyncio.Task | None = None
 
     @property
     def session(self) -> CaptureSessionModel | None:
@@ -113,6 +115,7 @@ class CaptureOrchestrator:
 
         # Create page and CDP session
         page = await self._browser_manager.new_page()
+        self._page = page
         cdp = await self._browser_manager.create_cdp_session(page)
 
         # Start network capture
@@ -144,7 +147,63 @@ class CaptureOrchestrator:
             except Exception:
                 self._log.warning("navigation_timeout", url=url)
 
+        # Start background DOM price polling
+        self._dom_poller_task = asyncio.create_task(self._poll_dom_prices())
+
         return self._capture_session.id
+
+    async def _poll_dom_prices(self) -> None:
+        """Background task to poll DOM for visible prices and annotate them."""
+        last_prices: set[float] = set()
+        while self._running:
+            if not self._page:
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                # Find all numbers on the page in expected price range
+                prices_list = await self._page.evaluate("""() => {
+                    const results = [];
+                    const walk = (node) => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const text = node.textContent.trim().replace(/[^0-9.]/g, '');
+                            if (text && /^\\d+(\\.\\d+)?$/.test(text)) {
+                                const val = parseFloat(text);
+                                if (val >= 0.001 && val <= 250000.0) {
+                                    results.push(val);
+                                }
+                            }
+                        } else {
+                            if (node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') {
+                                for (const child of node.childNodes) {
+                                    walk(child);
+                                }
+                            }
+                        }
+                    };
+                    walk(document.body);
+                    
+                    // Also scan input/select values
+                    const inputs = document.querySelectorAll('input, select');
+                    for (const input of inputs) {
+                        const text = input.value.trim().replace(/[^0-9.]/g, '');
+                        if (text && /^\\d+(\\.\\d+)?$/.test(text)) {
+                            const val = parseFloat(text);
+                            if (val >= 0.001 && val <= 250000.0) {
+                                results.push(val);
+                            }
+                        }
+                    }
+                    
+                    return Array.from(new Set(results));
+                }""")
+                current_prices = set(prices_list) if prices_list else set()
+                new_prices = current_prices - last_prices
+                for price in new_prices:
+                    await self.annotate(f"visible_price:{price}")
+                last_prices = current_prices
+            except Exception as e:
+                self._log.debug("dom_polling_error", error=str(e))
+            await asyncio.sleep(0.5)
 
     async def annotate(self, text: str) -> Annotation:
         """Add a user annotation to the current capture session.
@@ -198,6 +257,16 @@ class CaptureOrchestrator:
 
         self._running = False
 
+        # Cancel DOM poller
+        if self._dom_poller_task:
+            self._dom_poller_task.cancel()
+            try:
+                await self._dom_poller_task
+            except asyncio.CancelledError:
+                pass
+            self._dom_poller_task = None
+        self._page = None
+
         # Disable capture
         if self._network_capture:
             await self._network_capture.disable()
@@ -207,6 +276,7 @@ class CaptureOrchestrator:
 
         # Update session end time
         end_time = datetime.now(timezone.utc)
+        self._capture_session.ended_at = end_time
         self._capture_session.ended_at = end_time
         async with self._session_factory() as db:
             await SessionRepository.update_ended(

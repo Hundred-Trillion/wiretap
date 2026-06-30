@@ -36,3 +36,8 @@ profiles/
 .coverage
 htmlcov/
 .mypy_cache/
+*.png
+*.html
+*.webp
+*.log
+

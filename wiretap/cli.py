@@ -838,5 +838,153 @@ def inspect(
     asyncio.run(_run())
 
 
+@app.command("validate-price")
+def validate_price(
+    session_id: str = typer.Argument(..., help="Session ID to validate"),
+    base_dir: Optional[Path] = typer.Option(None, "--base-dir"),
+    log_level: str = typer.Option("WARNING", "--log-level"),
+) -> None:
+    """🧪 Validate price candidate fields against DOM visible price annotations."""
+
+    async def _run() -> None:
+        config = _get_config(base_dir, log_level=log_level)
+        engine, session_factory = await _init_db(config)
+
+        from wiretap.storage.repository import SessionRepository, ConnectionRepository, FrameRepository, PayloadRepository
+        from wiretap.validators.price_validator import PriceValidator
+        from wiretap.analysis.classification import BinaryClusteringEngine
+        from wiretap.analysis.similarity import PriceCandidateDetector
+
+        sid = UUID(session_id)
+
+        async with session_factory() as db:
+            session = await SessionRepository.get(db, sid)
+            if not session:
+                console.print(f"[red]Session {session_id} not found[/]")
+                return
+
+            connections = await ConnectionRepository.list_by_session(db, sid)
+            frames = await FrameRepository.list_by_session(db, sid)
+            
+            payloads = {}
+            for f in frames:
+                if f.payload_id:
+                    p = await PayloadRepository.get(db, f.payload_id)
+                    if p:
+                        payloads[f.payload_id] = p
+
+        # 1. Cluster frames into families to identify binary ones
+        binary_frames = [f for f in frames if f.is_binary and f.payload_id]
+        binary_fps = []
+        clustering_engine = BinaryClusteringEngine()
+
+        for f in binary_frames:
+            p = payloads.get(f.payload_id)
+            if p:
+                fp = clustering_engine.fingerprint_packet(
+                    frame_id=f.id,
+                    connection_id=f.connection_id,
+                    direction=f.direction,
+                    timestamp=f.timestamp,
+                    payload_raw=p.raw_bytes,
+                    sha256=p.sha256
+                )
+                binary_fps.append(fp)
+
+        families = clustering_engine.cluster(binary_fps)
+
+        # 2. Scan each family for price candidates
+        detector = PriceCandidateDetector()
+        all_candidates = []
+        for fam in families:
+            cands = detector.detect_prices(fam)
+            for cand in cands:
+                all_candidates.append((fam.id, cand))
+
+        if not all_candidates:
+            console.print("[yellow]No price tick candidates were detected by the scanner heuristic.[/]")
+            from wiretap.storage.engine import close_database
+            await close_database(engine)
+            return
+
+        # 3. Run validation against DOM annotations for all candidates
+        validator = PriceValidator()
+        reports = []
+        
+        async with session_factory() as db:
+            for fam_id, cand in all_candidates:
+                report = await validator.validate_candidate(
+                    db=db,
+                    session_id=sid,
+                    family_id=fam_id,
+                    offset=cand.offset,
+                    size=cand.size,
+                    endianness=cand.endianness,
+                    value_type=cand.value_type,
+                    scale_factor=cand.scale_factor,
+                    json_path=cand.json_path,
+                )
+                reports.append((cand, report))
+
+        # Sort reports by validation score descending
+        reports.sort(key=lambda r: r[1].score, reverse=True)
+
+        # Render styled scorecard table
+        from rich.table import Table
+        table = Table(title=f"Price Field Validation Scorecard - Session {session.name}", box=box.ROUNDED)
+        table.add_column("Family", style="cyan")
+        table.add_column("Field Detail", style="magenta")
+        table.add_column("Type/Scale", style="green")
+        table.add_column("Correlation (R)", style="yellow", justify="right")
+        table.add_column("Avg Rel Error", style="red", justify="right")
+        table.add_column("Score", style="bold", justify="right")
+        table.add_column("Decision", style="bold", justify="center")
+
+        for cand, rep in reports:
+            decision = "[green]VALID PRICE[/]" if rep.is_valid else "[red]REJECTED[/]"
+            if rep.json_path:
+                field_detail = f"JSON Path: {rep.json_path}"
+            else:
+                field_detail = f"offset 0x{rep.offset:02x} ({rep.size}B {rep.endianness})"
+            
+            # Formatting scale factor safely
+            scale_str = f"1/{int(rep.scale_factor)}" if rep.scale_factor != 1.0 else "1"
+            type_scale = f"{rep.value_type} ({scale_str})" if rep.scale_factor != 1.0 else rep.value_type
+            
+            table.add_row(
+                rep.family_id[:18],
+                field_detail,
+                type_scale,
+                f"{rep.correlation:.6f}" if rep.match_count > 0 else "N/A",
+                f"{rep.avg_relative_error * 100:.4f}%" if rep.match_count > 0 else "N/A",
+                f"{rep.score}/100" if rep.match_count > 0 else "0/100 (No DOM data)",
+                decision
+            )
+
+        console.print(table)
+        console.print("")
+
+        # Print the detailed breakdown for the best candidate
+        best_cand, best_rep = reports[0]
+        if best_rep.match_count > 0:
+            best_detail = f"JSON Path: {best_rep.json_path}" if best_rep.json_path else f"Offset 0x{best_rep.offset:02x}"
+            console.print(Panel(
+                f"[bold cyan]🔍 Detailed Scorecard (Best Candidate: {best_detail})[/]\n\n"
+                f"  • Correlation (R >= 0.999): [bold]{best_rep.score_breakdown.get('correlation_score', 0)}/40[/]\n"
+                f"  • Relative Error (<= 0.05%): [bold]{best_rep.score_breakdown.get('error_score', 0)}/30[/]\n"
+                f"  • Decimal/Scale Precision: [bold]{best_rep.score_breakdown.get('decimal_precision_score', 0)}/10[/]\n"
+                f"  • Timeline Persistence: [bold]{best_rep.score_breakdown.get('persistence_score', 0)}/10[/]\n"
+                f"  • Run/Session Stability: [bold]{best_rep.score_breakdown.get('session_stability_score', 0)}/10[/]\n\n"
+                f"  [bold]Total Score: {best_rep.score}/100[/]\n"
+                f"  Message: {best_rep.message}",
+                border_style="cyan"
+            ))
+
+        from wiretap.storage.engine import close_database
+        await close_database(engine)
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()

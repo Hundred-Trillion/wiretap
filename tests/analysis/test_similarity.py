@@ -140,3 +140,53 @@ def test_price_candidate_detector():
     assert best_cand.value_type == "float64"
     assert best_cand.endianness == "BE"
     assert best_cand.confidence > 0.5
+
+
+def test_json_price_candidate_detector():
+    detector = PriceCandidateDetector(min_price=10.0, max_price=150.0)
+
+    # Encode prices inside a JSON payload (e.g. Socket.IO binary frame with JSON: [["BTC", 123.45]])
+    prices = [100.5, 100.6, 100.4, 100.7, 100.5]
+    fps = []
+    base_time = datetime.now(timezone.utc)
+    conn_id = uuid4()
+
+    for i, price in enumerate(prices):
+        # Engine.IO prefix '04' followed by JSON
+        payload = f'\x04[["BCHUSD_otc",1782826138.626,{price},1]]'.encode('utf-8')
+        fps.append(
+            BinaryPacketFingerprint(
+                frame_id=uuid4(),
+                connection_id=conn_id,
+                direction=Direction.RECEIVED,
+                timestamp=base_time,
+                length=len(payload),
+                entropy=3.0,
+                crc32=12,
+                prefix=payload[:4],
+                sha256=f"sha-{i}",
+                payload_raw=payload,
+            )
+        )
+
+    family = BinaryPacketFamily(
+        id="fam_json_price",
+        direction=Direction.RECEIVED,
+        common_prefix="04",
+        avg_length=len(fps[0].payload_raw),
+        count=5,
+        avg_interval=1.0,
+        entropy=3.0,
+        confidence=0.9,
+        likely_purpose="test",
+        fingerprints=fps,
+    )
+
+    candidates = detector.detect_prices(family)
+    assert len(candidates) >= 1
+    best_cand = candidates[0]
+    assert best_cand.json_path == "[0][2]"
+    assert best_cand.endianness == "JSON"
+    assert best_cand.value_type == "json_numeric"
+    assert best_cand.confidence > 0.5
+
