@@ -1,4 +1,5 @@
 import asyncio
+import json
 import socket
 import ssl
 import time
@@ -81,7 +82,17 @@ class ProtocolClient:
                     cookies_str = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
                     headers["Cookie"] = cookies_str
                 
-                headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+                headers["sec-ch-ua"] = '"Chromium";v="149", "Not)A;Brand";v="24"'
+                headers["sec-ch-ua-mobile"] = "?0"
+                headers["sec-ch-ua-platform"] = '"Linux"'
+                
+                # Derive Origin header
+                origin = f"https://{hostname}"
+                if "qxbroker.com" in hostname:
+                    origin = "https://qxbroker.com"
+                headers["Origin"] = origin
+
                 
                 # Reconstruct full URL with query parameters
                 params = self.impl.protocol_spec.get("query_params", {})
@@ -94,7 +105,7 @@ class ProtocolClient:
                 # Establish WebSocket Connection
                 async with websockets.connect(
                     full_url,
-                    extra_headers=headers,
+                    additional_headers=headers,
                     ssl=ssl.create_default_context() if parsed_url.scheme == "wss" else None
                 ) as ws:
                     self.ws = ws
@@ -130,6 +141,21 @@ class ProtocolClient:
                     await ws.send(raw_auth)
                     self._log_trace("send", {"size": len(raw_auth)})
                     
+                    # Wait for authentication response (s_authorization) to complete
+                    auth_success = False
+                    for _ in range(20):  # Limit attempts to prevent infinite loop
+                        frame = await ws.recv()
+                        self._log_trace("receive", {"is_binary": isinstance(frame, bytes), "size": len(frame)})
+                        packet_type, payload = self.adapter.unpack(frame)
+                        payload_text = payload.decode("utf-8", errors="ignore") if isinstance(payload, bytes) else payload
+                        if "s_authorization" in payload_text:
+                            auth_success = True
+                            break
+                    
+                    if not auth_success:
+                        self._transition(ConnectionState.DISCONNECTED)
+                        raise ConnectionError("Authentication timed out or failed (s_authorization not received)")
+                    
                     # Transition to READY
                     self._transition(ConnectionState.READY)
                     
@@ -139,13 +165,17 @@ class ProtocolClient:
                     # 6. Subscribe State
                     if asset:
                         self._transition(ConnectionState.SUBSCRIBED)
-                        sub_payload = self.impl.get_subscription_payload(asset)
-                        raw_sub = self.adapter.pack(4, sub_payload)
-                        await ws.send(raw_sub)
-                        self._log_trace("send", {"size": len(raw_sub)})
+                        sub_payloads = self.impl.get_subscription_payload(asset)
+                        if not isinstance(sub_payloads, (list, tuple)):
+                            sub_payloads = [sub_payloads]
+                        for sub_payload in sub_payloads:
+                            raw_sub = self.adapter.pack(4, sub_payload)
+                            await ws.send(raw_sub)
+                            self._log_trace("send", {"size": len(raw_sub)})
                         
                         # Streaming State
                         self._transition(ConnectionState.STREAMING)
+
                     
                     # Receive Loop
                     while self._running:

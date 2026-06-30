@@ -1034,6 +1034,8 @@ def trace(
                     console.print(f"[dim][Heartbeat] {packet.direction}[/]")
                 elif hasattr(packet, "candles"):
                     console.print(f"[cyan][History] {packet.asset} ({len(packet.candles)} candles)[/]")
+                elif type(packet).__name__ == "PlaceholderPacket":
+                    pass
                 else:
                     console.print(f"[yellow][Unknown] type={packet.packet_type} size={len(packet.raw_payload)}[/]")
         except KeyboardInterrupt:
@@ -1090,6 +1092,8 @@ def simulate(
                 console.print(f"[dim]#{seq}[/] [dim][Heartbeat] {packet.direction}[/]")
             elif hasattr(packet, "candles"):
                 console.print(f"[dim]#{seq}[/] [cyan][History] {packet.asset} ({len(packet.candles)} candles)[/]")
+            elif type(packet).__name__ == "PlaceholderPacket":
+                pass
             else:
                 console.print(f"[dim]#{seq}[/] [yellow][Unknown] type={packet.packet_type}[/]")
 

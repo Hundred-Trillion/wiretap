@@ -2,7 +2,7 @@ import json
 import re
 from typing import Any, Union, Optional
 from wiretap.protocols.base import BaseProtocolImplementation
-from wiretap.core.packets import Packet, Heartbeat, PriceTick, HistoryPacket, UnknownPacket
+from wiretap.core.packets import Packet, Heartbeat, PriceTick, HistoryPacket, UnknownPacket, PlaceholderPacket
 
 class QuotexProtocolImplementation(BaseProtocolImplementation):
     def setup_registry(self):
@@ -57,16 +57,21 @@ class QuotexProtocolImplementation(BaseProtocolImplementation):
             "isDemo": 1 if is_demo else 0,
             "tournamentId": 0
         }
-        # Pack into Socket.IO event format: 42["event_name", payload_dict]
-        return f'42["{event_name}",{json.dumps(payload_dict, separators=(",", ":"))}]'
+        # Pack into Socket.IO event format: 2["event_name", payload_dict]
+        # (Engine.IO adapter will prepend the message packet type '4' to form '42')
+        return f'2["{event_name}",{json.dumps(payload_dict, separators=(",", ":"))}]'
 
-    def get_subscription_payload(self, asset: str) -> Union[str, bytes]:
-        # Formulate subscription update packet: 42["instruments/update", {"asset": asset, "period": 60}]
+    def get_subscription_payload(self, asset: str) -> Union[str, bytes, list[Union[str, bytes]]]:
+        # Formulate both instruments/update and depth/follow payloads
+        # (Engine.IO adapter will prepend the message packet type '4' to form '42')
         payload_dict = {
             "asset": asset,
             "period": 60
         }
-        return f'42["instruments/update",{json.dumps(payload_dict, separators=(",", ":"))}]'
+        inst_payload = f'2["instruments/update",{json.dumps(payload_dict, separators=(",", ":"))}]'
+        depth_payload = f'2["depth/follow","{asset}"]'
+        return [inst_payload, depth_payload]
+
 
     def parse_payload(self, packet_type: int, payload: Union[str, bytes]) -> Packet:
         # Standardize bytes vs string decoding
@@ -83,6 +88,18 @@ class QuotexProtocolImplementation(BaseProtocolImplementation):
             text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
         except Exception as e:
             return UnknownPacket(packet_type=packet_type, raw_payload=raw_bytes, error_msg=f"Decoding failed: {e}")
+
+        # Check for binary placeholder metadata (starts with '5' + digits + '-')
+        # e.g., "51-[\"quotes/stream\",{\"_placeholder\":true,\"num\":0}]"
+        if text.startswith("5") and "-" in text:
+            parts = text.split("-", 1)
+            if parts[0][1:].isdigit():
+                try:
+                    placeholder_data = json.loads(parts[1])
+                    if isinstance(placeholder_data, list) and len(placeholder_data) > 0:
+                        return PlaceholderPacket(event_name=placeholder_data[0])
+                except Exception:
+                    pass
 
         # 3. Route Socket.IO events (type 42)
         if text.startswith("2[") or text.startswith("42["):
