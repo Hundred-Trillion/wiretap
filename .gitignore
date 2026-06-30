@@ -29,7 +29,7 @@ MANIFEST
 *.db-journal
 *.sqlite3
 profiles/
-reports/
+/reports/
 .idea/
 .vscode/
 .pytest_cache/
