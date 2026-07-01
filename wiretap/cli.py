@@ -1046,6 +1046,40 @@ def trace(
 
 
 @app.command()
+def watch(
+    target: float = typer.Option(..., "--target", help="Target price trigger value"),
+    asset: str = typer.Option("BTCUSD_otc", "--asset", "-a", help="Asset name to subscribe to"),
+    operator: str = typer.Option(">=", "--operator", help="Comparison operator (>, <, >=, <=, ==)"),
+    token: str = typer.Option(..., "--token", "-t", help="Authentication token"),
+    session_file: Optional[Path] = typer.Option(None, "--session-file", help="Path to session_details.json"),
+    telegram_token: Optional[str] = typer.Option(None, "--telegram-token", help="Telegram Bot API token"),
+    telegram_chat_id: Optional[str] = typer.Option(None, "--telegram-chat-id", help="Telegram Chat ID to notify"),
+    one_shot: bool = typer.Option(False, "--one-shot", help="Query current price once, evaluate, and exit"),
+) -> None:
+    """🎯 Start a price watcher that triggers when a target condition is met."""
+    import asyncio
+    from wiretap.watcher import run_watcher
+
+    async def _run() -> None:
+        await run_watcher(
+            asset=asset,
+            target_price=target,
+            operator=operator,
+            token=token,
+            session_file=str(session_file) if session_file else None,
+            telegram_token=telegram_token,
+            telegram_chat_id=telegram_chat_id,
+            one_shot=one_shot
+        )
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Watcher stopped.[/]")
+
+
+
+@app.command()
 def simulate(
     session_id: str = typer.Argument(..., help="Session ID to simulate"),
     protocol_name: str = typer.Option("quotex", "--protocol", help="Protocol name (e.g. quotex)"),
