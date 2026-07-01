@@ -7,5 +7,6 @@
     "EIO": "3",
     "transport": "websocket"
   },
-  "engine_io_version": 3
+  "engine_io_version": 3,
+  "origin": "https://qxbroker.com"
 }

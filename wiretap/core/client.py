@@ -1,5 +1,7 @@
 import asyncio
+import collections
 import json
+import os
 import socket
 import ssl
 import time
@@ -15,13 +17,18 @@ from wiretap.core.packets import Packet, Heartbeat, UnknownPacket
 from wiretap.protocols.base import BaseProtocolImplementation
 from wiretap.drift.drift_detector import DriftDetector
 
+# Maximum number of trace log entries to retain in memory.
+# Prevents unbounded memory growth during long-running sessions.
+_MAX_TRACE_LOG_SIZE = 5000
+
+
 class ProtocolClient:
     def __init__(
         self,
         implementation: BaseProtocolImplementation,
         adapter: BaseProtocolAdapter,
         session_provider: BaseSessionProvider,
-        trace_logger: Optional[list[dict]] = None
+        trace_logger: Optional[collections.deque] = None
     ):
         self.impl = implementation
         self.adapter = adapter
@@ -29,7 +36,9 @@ class ProtocolClient:
         self.state = ConnectionState.DISCONNECTED
         self.ws = None
         self.ping_task = None
-        self.trace_logger = trace_logger if trace_logger is not None else []
+        # Bug fix #1: Use a bounded deque instead of an unbounded list
+        # to prevent memory leaks during long-running sessions.
+        self.trace_logger = trace_logger if trace_logger is not None else collections.deque(maxlen=_MAX_TRACE_LOG_SIZE)
         self.drift_detector = DriftDetector(self.impl)
         self._running = False
         self._ping_interval = 25.0
@@ -87,10 +96,8 @@ class ProtocolClient:
                 headers["sec-ch-ua-mobile"] = "?0"
                 headers["sec-ch-ua-platform"] = '"Linux"'
                 
-                # Derive Origin header
-                origin = f"https://{hostname}"
-                if "qxbroker.com" in hostname:
-                    origin = "https://qxbroker.com"
+                # Derive Origin header from protocol spec or hostname
+                origin = self.impl.protocol_spec.get("origin", f"https://{hostname}")
                 headers["Origin"] = origin
 
                 
@@ -132,11 +139,9 @@ class ProtocolClient:
                     
                     # Send Authorization event
                     auth_payload = self.impl.get_auth_payload(token, is_demo)
-                    # Pack authorization payload as message type 42 (Socket.IO event)
-                    # For Engine.IO, 42 is event.
-                    # Wait, our get_auth_payload helper returns the full Socket.IO frame starting with "42["
-                    # So it already has Socket.IO event prefix. In Engine.IO terms, we pack it as message (type 4)
-                    # since the "4" + "2" = "42" is standard Socket.IO event representation.
+                    # Pack authorization payload as Engine.IO message (type 4).
+                    # get_auth_payload returns the Socket.IO frame body (e.g. '2["auth",...]'),
+                    # so packing with type 4 produces '42["auth",...]' on the wire.
                     raw_auth = self.adapter.pack(4, auth_payload)
                     await ws.send(raw_auth)
                     self._log_trace("send", {"size": len(raw_auth)})
@@ -160,6 +165,10 @@ class ProtocolClient:
                     self._transition(ConnectionState.READY)
                     
                     # Start Heartbeat scheduler
+                    # Bug fix #4: In Engine.IO v3, the CLIENT sends pings and the
+                    # SERVER replies with pongs. We only need the _ping_loop
+                    # (client-initiated). The receive loop below no longer sends
+                    # duplicate pong replies to server pings.
                     self.ping_task = asyncio.create_task(self._ping_loop())
                     
                     # 6. Subscribe State
@@ -190,11 +199,9 @@ class ProtocolClient:
                         # Inspect for drift/validation
                         self.drift_detector.inspect(packet)
                         
-                        # Automatically reply to keep-alive pings
-                        if isinstance(packet, Heartbeat) and packet.direction == "ping":
-                            pong_raw = self.adapter.pack(3, "")  # EIO pong is type 3
-                            await ws.send(pong_raw)
-                            self._log_trace("send", {"size": len(pong_raw)})
+                        # In EIO v3 the server sends pong (type 3) in response to
+                        # our client-initiated pings. We do NOT need to reply.
+                        # Simply yield heartbeats so callers can observe them.
                             
                         yield packet
                         
@@ -216,8 +223,11 @@ class ProtocolClient:
                 backoff = min(backoff * 2, 60.0)
 
     async def _ping_loop(self):
-        """Sends ping keep-alive frames periodically if configured as client-sender,
-        or monitors connection active state."""
+        """Sends client-initiated ping keep-alive frames periodically.
+        
+        In Engine.IO v3, the client sends ping (type 2) and the server
+        responds with pong (type 3). This is the only heartbeat path.
+        """
         try:
             while self._running and self.ws:
                 await asyncio.sleep(self._ping_interval)

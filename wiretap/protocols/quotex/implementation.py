@@ -159,9 +159,9 @@ class QuotexProtocolImplementation(BaseProtocolImplementation):
                         
         elif isinstance(packet, HistoryPacket):
             # Validate asset name and period
-            if not re.match(r"^[A-Z]{3,8}(?:_otc)?$", packet.asset):
+            if not re.match(r"^[A-Z]{3,8}(?:USD)?(?:_otc)?$", packet.asset):
                 errors.append(f"Asset name '{packet.asset}' is invalid")
-            if packet.period != 60:
-                errors.append(f"Expected history period 60, got {packet.period}")
+            if packet.period <= 0:
+                errors.append(f"Expected positive history period, got {packet.period}")
                 
         return len(errors) == 0, errors

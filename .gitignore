@@ -41,3 +41,17 @@ htmlcov/
 *.webp
 *.log
 
+
+# Sensitive/generated files
+active_token.txt
+session_details.json
+storage_state.json
+ticks_captured.csv
+replay_validation.json
+validation_report.json
+validation_run.log
+validation_progress.log
+trace_output.log
+trace_output_unbuffered.log
+wiretap.db
+*.png

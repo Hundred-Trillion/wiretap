@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Optional
 
 class BaseSessionProvider:
@@ -9,17 +10,20 @@ class BaseSessionProvider:
         return None
 
 class TokenSessionProvider(BaseSessionProvider):
-    def __init__(self, token: str):
+    def __init__(self, token: str, session_file: Optional[str] = None):
         self._token = token
+        # Bug fix #2: Accept an explicit path instead of relying on cwd.
+        # Falls back to ./session_details.json for backwards compatibility,
+        # but callers (e.g. CLI) should pass an absolute path.
+        self._session_file = session_file or os.path.join(os.getcwd(), "session_details.json")
 
     def resolve_token(self) -> Optional[str]:
         return self._token
 
     def resolve_cookies(self) -> Optional[dict[str, str]]:
-        import os, json
-        if os.path.exists("session_details.json"):
+        if os.path.exists(self._session_file):
             try:
-                with open("session_details.json", "r") as f:
+                with open(self._session_file, "r") as f:
                     data = json.load(f)
                 if data.get("token") == self._token:
                     return data.get("cookies")

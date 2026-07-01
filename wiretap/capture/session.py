@@ -277,7 +277,6 @@ class CaptureOrchestrator:
         # Update session end time
         end_time = datetime.now(timezone.utc)
         self._capture_session.ended_at = end_time
-        self._capture_session.ended_at = end_time
         async with self._session_factory() as db:
             await SessionRepository.update_ended(
                 db, self._capture_session.id, end_time
